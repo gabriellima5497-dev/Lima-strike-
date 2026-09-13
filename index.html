@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Lima Strike</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; touch-action: none; user-select: none; }
+    body, html { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: monospace; }
+
+    /* HUD e Mira */
+    #crosshair {
+      position: absolute; top: 50%; left: 50%; width: 8px; height: 8px;
+      transform: translate(-50%, -50%); pointer-events: none; z-index: 10;
+    }
+    #crosshair::before, #crosshair::after { content: ''; position: absolute; background: #00ff00; }
+    #crosshair::before { top: 3px; left: -10px; width: 26px; height: 2px; }
+    #crosshair::after { top: -10px; left: 3px; width: 2px; height: 26px; }
+
+    #hud {
+      position: absolute; top: 10px; left: 10px; color: #fff; z-index: 10; font-size: 14px;
+      background: rgba(0,0,0,0.5); padding: 8px; border-radius: 6px;
+    }
+
+    /* Painel Multiplayer */
+    #net-panel {
+      position: absolute; top: 10px; right: 10px; z-index: 15; background: rgba(0,0,0,0.7);
+      padding: 6px; border-radius: 6px; color: #fff; font-size: 11px;
+    }
+    #net-panel input { width: 90px; font-size: 11px; }
+
+    /* Botões Touch */
+    .btn {
+      position: absolute; z-index: 12; border-radius: 50%; background: rgba(255,255,255,0.25);
+      border: 2px solid rgba(255,255,255,0.5); color: #fff; display: flex; align-items: center;
+      justify-content: center; font-weight: bold;
+    }
+    #btn-fire { right: 30px; bottom: 30px; width: 75px; height: 75px; background: rgba(255, 30, 30, 0.45); }
+    #btn-reload { right: 120px; bottom: 30px; width: 50px; height: 50px; }
+    #btn-crouch { right: 30px; bottom: 120px; width: 50px; height: 50px; }
+    #btn-swap { right: 90px; bottom: 90px; width: 50px; height: 50px; background: rgba(255,165,0,0.4); }
+
+    /* Flash de dano e tela de morte */
+    #damage-flash {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: red; opacity: 0; pointer-events: none; transition: opacity 0.1s; z-index: 9;
+    }
+    #death-screen {
+      display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.85); color: red; z-index: 20; align-items: center;
+      justify-content: center; font-size: 24px; flex-direction: column;
+    }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.2/peerjs.min.js"></script>
+</head>
+<body>
+
+  <div id="crosshair"></div>
+  <div id="damage-flash"></div>
+  
+  <div id="hud">
+    <div><strong>LIMA STRIKE 1v1</strong></div>
+    <div id="weapon-name">ARMA: AK-47</div>
+    <div id="ammo-info">MUNIÇÃO: 30 / 90</div>
+    <div id="hp-info">VIDA: 100</div>
+  </div>
+
+  <div id="net-panel">
+    <div>Meu ID: <span id="my-peer-id">Conectando...</span></div>
+    <input type="text" id="target-peer" placeholder="ID Amigo">
+    <button onclick="connectToPeer()">Conectar</button>
+    <div id="net-status">Offline</div>
+  </div>
+
+  <div id="death-screen">
+    <div>VOCÊ FOI ELIMINADO!</div>
+    <div style="font-size: 14px; color: #fff; margin-top: 10px;">Respawnando em 3s...</div>
+  </div>
+
+  <!-- Botões de ação do celular -->
+  <button id="btn-fire" class="btn">TIRO</button>
+  <button id="btn-reload" class="btn">R</button>
+  <button id="btn-crouch" class="btn">AG</button>
+  <button id="btn-swap" class="btn">ARM</button>
+
+  <script>
+    // --- 1. CONFIGURAÇÃO THREE.JS (GRÁFICOS, SOMBRAS E MAPA) ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xdbe9f4);
+    scene.fog = new THREE.Fog(0xdbe9f4, 15, 60);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    // Iluminação
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.7));
+    const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+    sun.position.set(20, 30, 15);
+    sun.castShadow = true;
+    sun.shadow.mapSize.width = 1024;
+    sun.shadow.mapSize.height = 1024;
+    scene.add(sun);
+
+    // Chão com grade de arena
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(80, 80),
+      new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.8 })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    // Paredes e caixas do mapa (Layout competitivo simples)
+    const boxes = [];
+    function createBox(x, y, z, w, h, d, color = 0x8b5a2b) {
+      const box = new THREE.Mesh(
+        new THREE.BoxGeometry(w, h, d),
+        new THREE.MeshStandardMaterial({ color, roughness: 0.7 })
+      );
+      box.position.set(x, y + h/2, z);
+      box.castShadow = true;
+      box.receiveShadow = true;
+      scene.add(box);
+      boxes.push(box);
+    }
+    
+    // Caixas centrais e barreiras
+    createBox(0, 0, -10, 4, 2.5, 1.5);
+    createBox(-6, 0, -5, 2, 2, 2);
+    createBox(6, 0, -5, 2, 2, 2);
+    createBox(-8, 0, -15, 3, 3, 3);
+    createBox(8, 0, -15, 3, 3, 3);
+
+    // --- 2. JOGADOR LOCAL, ARMAS E MECÂNICAS ---
+    const WEAPONS = [
+      { name: "AK-47", ammo: 30, maxAmmo: 30, damage: 34, fov: 75, recoil: 0.08, color: 0x2b1d0c },
+      { name: "AWP", ammo: 5, maxAmmo: 5, damage: 100, fov: 35, recoil: 0.2, color: 0x264d26 },
+      { name: "PISTOLA", ammo: 12, maxAmmo: 12, damage: 20, fov: 75, recoil: 0.04, color: 0x111111 }
+    ];
+
+    let currentWpnIndex = 0;
+    let hp = 100;
+    let isCrouched = false;
+    let isReloading = false;
+
+    // Modelo provisório da arma na mão
+    const gunGroup = new THREE.Group();
+    const gunMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.1, 0.12, 0.5),
+      new THREE.MeshStandardMaterial({ color: WEAPONS[0].color, metalness: 0.5 })
+    );
+    gunGroup.add(gunMesh);
+    gunGroup.position.set(0.28, -0.28, -0.5);
+    camera.add(gunGroup);
+    scene.add(camera);
+
+    camera.position.set(0, 1.7, 5);
+
+    // --- 3. BONECO DO INIMIGO MULTIPLAYER ---
+    const enemy = new THREE.Group();
+    const enemyBody = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.35, 0.35, 1.6, 12),
+      new THREE.MeshStandardMaterial({ color: 0x0055ff }) // Cor azul estilo Contra-Terrorista
+    );
+    enemyBody.castShadow = true;
+    enemyBody.position.y = 0.8;
+    enemy.add(enemyBody);
+    enemy.position.set(0, 0, -18);
+    scene.add(enemy);
+
+    // --- 4. CONTROLES DE TOQUE (ANALÓGICO E SENSIBILIDADE DE MIRA) ---
+    let moveForward = 0, moveSide = 0;
+
+    // Analógico Virtual na metade esquerda da tela
+    const joyManager = nipplejs.create({
+      zone: document.body,
+      mode: 'semi',
+      catchStyle: { position: 'absolute' },
+      maxNumberOfNipples: 1
+    });
+
+    joyManager.on('start', (evt, data) => {
+      // Bloqueia se o toque for do lado direito (onde mira e atira)
+      if (data.position.x > window.innerWidth / 2) {
+        joyManager[0].destroy();
+      }
+    });
+
+    joyManager.on('move', (evt, data) => {
+      if (data.vector) {
+        moveForward = data.vector.y;
+        moveSide = data.vector.x;
+      }
+    });
+
+    joyManager.on('end', () => {
+      moveForward = 0;
+      moveSide = 0;
+    });
+
+    // Touch no lado direito da tela para olhar em volta (Mira de CS)
+    let lookTouchId = null;
+    let lastTouchX = 0, lastTouchY = 0;
+    let yaw = 0, pitch = 0;
+
+    window.addEventListener('touchstart', (e) => {
+      for (let t of e.changedTouches) {
+        if (t.clientX > window.innerWidth / 2 && lookTouchId === null) {
+          lookTouchId = t.identifier;
+          lastTouchX = t.clientX;
+          lastTouchY = t.clientY;
+        }
+      }
+    });
+
+    window.addEventListener('touchmove', (e) => {
+      for (let t of e.changedTouches) {
+        if (t.identifier === lookTouchId) {
+          const deltaX = (t.clientX - lastTouchX) * 0.004;
+          const deltaY = (t.clientY - lastTouchY) * 0.004;
+          
+          yaw -= deltaX;
+          pitch = Math.max(-Math.PI/2.2, Math.min(Math.PI/2.2, pitch - deltaY));
+
+          lastTouchX = t.clientX;
+          lastTouchY = t.clientY;
+        }
+      }
+    });
+
+    window.addEventListener('touchend', (e) => {
+      for (let t of e.changedTouches) {
+        if (t.identifier === lookTouchId) lookTouchId = null;
+      }
+    });
+
+    // --- 5. AÇÕES DO JOGADOR (TIRO, RECARGA, AGACHAR, TROCA) ---
+    function updateHUD() {
+      const wpn = WEAPONS[currentWpnIndex];
+      document.getElementById('weapon-name').innerText = `ARMA: ${wpn.name}`;
+      document.getElementById('ammo-info').innerText = `MUNIÇÃO: ${wpn.ammo} / ${wpn.maxAmmo * 3}`;
+      document.getElementById('hp-info').innerText = `VIDA: ${hp}`;
+    }
+
+    function shoot() {
+      const wpn = WEAPONS[currentWpnIndex];
+      if (wpn.ammo <= 0 || isReloading) return;
+
+      wpn.ammo--;
+      updateHUD();
+
+      // Recuo visual fluido
+      gunGroup.position.z += wpn.recoil;
+      setTimeout(() => gunGroup.position.z -= wpn.recoil, 70);
+
+      // Traçado de tiro (Raycast no centro)
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+      const intersects = raycaster.intersectObject(enemy, true);
+
+      if (intersects.length > 0) {
+        sendHit(wpn.damage);
+      }
+    }
+
+    function reload() {
+      if (isReloading) return;
+      isReloading = true;
+      document.getElementById('ammo-info').innerText = "RECARREGANDO...";
+      gunGroup.position.y -= 0.15; // abaixa a arma
+      setTimeout(() => {
+        WEAPONS[currentWpnIndex].ammo = WEAPONS[currentWpnIndex].maxAmmo;
+        gunGroup.position.y += 0.15;
+        isReloading = false;
+        updateHUD();
+      }, 1500);
+    }
+
+    function toggleCrouch() {
+      isCrouched = !isCrouched;
+      camera.position.y = isCrouched ? 0.9 : 1.7;
+    }
+
+    function swapWeapon() {
+      currentWpnIndex = (currentWpnIndex + 1) % WEAPONS.length;
+      const wpn = WEAPONS[currentWpnIndex];
+      gunMesh.material.color.setHex(wpn.color);
+      camera.fov = wpn.fov;
+      camera.updateProjectionMatrix();
+      updateHUD();
+    }
+
+    function takeDamage(dmg) {
+      hp -= dmg;
+      const flash = document.getElementById('damage-flash');
+      flash.style.opacity = 0.5;
+      setTimeout(() => flash.style.opacity = 0, 150);
+
+      if (hp <= 0) {
+        hp = 0;
+        document.getElementById('death-screen').style.display = 'flex';
+        setTimeout(respawn, 3000);
+      }
+      updateHUD();
+    }
+
+    function respawn() {
+      hp = 100;
+      camera.position.set(0, 1.7, 5);
+      document.getElementById('death-screen').style.display = 'none';
+      updateHUD();
+    }
+
+    // Botões touch
+    document.getElementById('btn-fire').addEventListener('touchstart', (e) => { e.preventDefault(); shoot(); });
+    document.getElementById('btn-reload').addEventListener('touchstart', (e) => { e.preventDefault(); reload(); });
+    document.getElementById('btn-crouch').addEventListener('touchstart', (e) => { e.preventDefault(); toggleCrouch(); });
+    document.getElementById('btn-swap').addEventListener('touchstart', (e) => { e.preventDefault(); swapWeapon(); });
+
+    // --- 6. MULTIPLAYER 1v1 REAL (PEERJS / WEBRTC) ---
+    let peer = new Peer();
+    let conn = null;
+
+    peer.on('open', (id) => {
+      document.getElementById('my-peer-id').innerText = id;
+    });
+
+    peer.on('connection', (c) => {
+      conn = c;
+      setupConnection();
+    });
+
+    function connectToPeer() {
+      const targetId = document.getElementById('target-peer').value.trim();
+      if (!targetId) return;
+      conn = peer.connect(targetId);
+      setupConnection();
+    }
+
+    function setupConnection() {
+      document.getElementById('net-status').innerText = "ONLINE 1v1!";
+      conn.on('data', (data) => {
+        if (data.type === 'move') {
+          enemy.position.set(data.x, data.y - 0.9, data.z);
+          enemy.rotation.y = data.yaw;
+        } else if (data.type === 'hit') {
+          takeDamage(data.dmg);
+        }
+      });
+    }
+
+    function sendHit(dmg) {
+      if (conn && conn.open) {
+        conn.send({ type: 'hit', dmg });
+      }
+    }
+
+    // --- 7. LOOP PRINCIPAL DO JOGO ---
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+
+      // Aplicar rotação da câmera
+      camera.rotation.set(0, 0, 0);
+      camera.rotation.order = "YXZ";
+      camera.rotation.y = yaw;
+      camera.rotation.x = pitch;
+
+      // Movimentação em relação à direção da mira
+      const speed = isCrouched ? 2.5 : 5.0;
+      const forward = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+      const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+
+      camera.position.addScaledVector(forward, moveForward * speed * delta);
+      camera.position.addScaledVector(right, moveSide * speed * delta);
+
+      // Sincronizar posição com o outro jogador via WebRTC
+      if (conn && conn.open) {
+        conn.send({
+          type: 'move',
+          x: camera.position.x,
+          y: camera.position.y,
+          z: camera.position.z,
+          yaw: yaw
+        });
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
